@@ -28,6 +28,7 @@ c_tr:    db 0xE2, 0x94, 0x90   ; ┐
 c_bl:    db 0xE2, 0x94, 0x94   ; └
 c_br:    db 0xE2, 0x94, 0x98   ; ┘
 space:   db " "
+BOX_LEN equ 3                  ; длина для всех UTF-8
 
 ball_x:   dd 40
 ball_y:   dd 12
@@ -72,8 +73,19 @@ _start:
 	lea rsi, [hide]
 	mov edx, hide_len
 	call print
-arena:
-	mov r8, 1
+
+	mov r12d, 1              ; текущий столбец
+arena_w_low:
+	cmp r12d, W
+	jg arena_w_low_done
+	mov edi, H               ; строка: нижняя
+	mov esi, r12d            ; столбец: текущий
+	lea r8, [h_line]
+	mov r9d, BOX_LEN
+	call put
+	inc r12d
+	jmp arena_w_low
+arena_w_low_done:
 
 
 
@@ -95,9 +107,9 @@ game_loop:
 	mov eax, [ball_x]
 	add eax, [ball_dx]
 	mov [ball_x], eax
-	cmp eax, 1
+	cmp eax, 2
 	jle flip_x
-	cmp eax, W
+	cmp eax, W - 1
 	jl x_ok
 flip_x:
 	neg dword [ball_dx]
@@ -105,9 +117,9 @@ x_ok:
 	mov eax, [ball_y]
 	add eax, [ball_dy]
 	mov [ball_y], eax
-	cmp eax, 1
+	cmp eax, 2
 	jle flip_y
-	cmp eax, H
+	cmp eax, H - 1
 	jl y_ok
 flip_y:
 	neg dword [ball_dy]
@@ -173,13 +185,13 @@ handle_input:
 	cmp r13d, r14d
 	jl .next
 .clamp:                        ; не выпускать ракетку за поле
-	cmp dword [paddle_y], 3
+	cmp dword [paddle_y], 2
 	jge .top_ok
-	mov dword [paddle_y], 3
+	mov dword [paddle_y], 2
 .top_ok:
-	cmp dword [paddle_y], H - PADDLE + 1
+	cmp dword [paddle_y], H - PADDLE
 	jle .done
-	mov dword [paddle_y], H - PADDLE + 1
+	mov dword [paddle_y], H - PADDLE
 .done:
 	xor eax, eax
 	ret
