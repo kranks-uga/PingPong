@@ -1,8 +1,8 @@
 default rel
 global _start
 
-W       equ 80            ; ширина поля
-H       equ 24            ; высота поля
+X       equ 80            ; ширина поля
+Y       equ 24            ; высота поля
 PADDLE  equ 5             ; длина ракетки
 ICANON  equ 2             ; флаг: построчный ввод (ждать Enter)
 ECHO    equ 8             ; флаг: печатать нажатые клавиши
@@ -74,18 +74,11 @@ _start:
 	mov edx, hide_len
 	call print
 
-	mov r12d, 1              ; текущий столбец
-arena_w_low:
-	cmp r12d, W
-	jg arena_w_low_done
-	mov edi, H               ; строка: нижняя
-	mov esi, r12d            ; столбец: текущий
-	lea r8, [h_line]
-	mov r9d, BOX_LEN
-	call put
-	inc r12d
-	jmp arena_w_low
-arena_w_low_done:
+	mov r13d, 1              ; нижний
+	call arena_x
+	mov r13d, Y			 	 ; верхний
+	call arena_x
+
 
 
 
@@ -109,7 +102,7 @@ game_loop:
 	mov [ball_x], eax
 	cmp eax, 2
 	jle flip_x
-	cmp eax, W - 1
+	cmp eax, X - 1
 	jl x_ok
 flip_x:
 	neg dword [ball_dx]
@@ -119,7 +112,7 @@ x_ok:
 	mov [ball_y], eax
 	cmp eax, 2
 	jle flip_y
-	cmp eax, H - 1
+	cmp eax, Y - 1
 	jl y_ok
 flip_y:
 	neg dword [ball_dy]
@@ -157,7 +150,7 @@ quit:
 	syscall
 
 ; handle_input: читает все нажатые клавиши, двигает ракетку
-; возвращает eax = 1, если нажата q, иначе 0``
+; возвращает eax = 1, если нажата q, иначе 0
 handle_input:
 	xor eax, eax              ; read(0, keys, 16)
 	xor edi, edi
@@ -189,9 +182,9 @@ handle_input:
 	jge .top_ok
 	mov dword [paddle_y], 2
 .top_ok:
-	cmp dword [paddle_y], H - PADDLE
+	cmp dword [paddle_y], Y - PADDLE
 	jle .done
-	mov dword [paddle_y], H - PADDLE
+	mov dword [paddle_y], Y - PADDLE
 .done:
 	xor eax, eax
 	ret
@@ -241,4 +234,21 @@ goto:
 	lea rsi, [pos]
 	mov edx, 8
 	call print
+	ret
+
+
+; arena_x: горизонтальная линия, r13d = номер строки
+arena_x:
+	mov r12d, 1              ; начинаем с первого столбца
+.loop:
+	cmp r12d, X
+	jg .done
+	mov edi, r13d            ; строка: из аргумента
+	mov esi, r12d            ; столбец: текущий
+	lea r8, [h_line]
+	mov r9d, BOX_LEN
+	call put
+	inc r12d
+	jmp .loop
+.done:
 	ret
