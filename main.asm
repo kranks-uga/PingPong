@@ -105,6 +105,30 @@ _start:
         mov r13d, X
         call arena_y
 
+        mov edi, 1                     ; верхний левый угол
+        mov esi, 1
+        lea r8, [c_tl]
+        mov r9d, BOX_LEN
+        call put
+
+        mov edi, 1                     ; верхний правый угол
+        mov esi, X
+        lea r8, [c_tr]
+        mov r9d, BOX_LEN
+        call put
+
+        mov edi, Y                     ; нижний левый угол
+        mov esi, 1
+        lea r8, [c_bl]
+        mov r9d, BOX_LEN
+        call put
+
+        mov edi, Y                     ; нижний правый угол
+        mov esi, X
+        lea r8, [c_br]
+        mov r9d, BOX_LEN
+        call put
+
 game_loop:
 ; 1. стереть старое
         lea r8, [space]
