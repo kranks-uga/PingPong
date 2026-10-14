@@ -78,6 +78,8 @@ old_l:
         resd 1                         ; позиции ракеток до ввода
 old_r:
         resd 1
+prev_y:
+        resd 1                         ; строка мяча до хода
 
         section .text
 _start:
@@ -170,6 +172,7 @@ game_loop:
 
 ; 3. движение мяча: сначала по вертикали (стенки)
         mov eax, [ball_y]
+        mov [prev_y], eax
         add eax, [ball_dy]
         mov [ball_y], eax
         cmp eax, 2
@@ -316,12 +319,20 @@ clamp:
         ret
 
 ; hit_paddle: rbp = ракетка; eax = 1, если мяч на её высоте
+; до или после хода — иначе удар краем ракетки по диагонали считается голом
 hit_paddle:
         mov eax, [ball_y]
         sub eax, [rbp]                 ; 0..PADDLE-1 = попал
         cmp eax, PADDLE                ; беззнаково: отрицательные тоже мимо
-        setb al
-        movzx eax, al
+        jb .hit
+        mov eax, [prev_y]
+        sub eax, [rbp]
+        cmp eax, PADDLE
+        jb .hit
+        xor eax, eax
+        ret
+.hit:
+        mov eax, 1
         ret
 
 ; draw_score: рисует счёт поверх верхней стенки
