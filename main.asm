@@ -160,6 +160,8 @@ old_r:
         resd 1
 prev_y:
         resd 1                         ; строка мяча до хода
+bot_tick:
+        resd 1                         ; бот ходит через кадр
 
         section .text
 _start:
@@ -254,6 +256,10 @@ game_loop:
         call handle_input              ; вернёт eax = 1, если нажали q
         test eax, eax
         jnz quit
+        cmp dword [game_mode], 1       ; против компьютера — правой ракеткой рулит бот
+        jne .no_bot
+        call bot
+.no_bot:
 
 ; 3. движение мяча: сначала по вертикали (стенки)
         mov eax, [ball_y]
@@ -369,6 +375,8 @@ handle_input:
         jne .not_s
         inc dword [paddle_l]
 .not_s:
+        cmp dword [game_mode], 0       ; против бота стрелки не работают
+        jne .not_down
         cmp al, 'A'                    ; стрелка вверх
         jne .not_up
         dec dword [paddle_r]
@@ -559,6 +567,30 @@ menu:
         ret
 .quit:
         mov eax, 1
+        ret
+
+; bot: двигает правую ракетку к мячу, пока он летит к ней,
+; иначе возвращает в центр. Ходит раз в два кадра — чтобы можно было обыграть
+bot:
+        xor dword [bot_tick], 1
+        jz .done                       ; чётный кадр — пропускаем
+        mov eax, [ball_y]
+        cmp dword [ball_dx], 0
+        jg .chase
+        mov eax, Y / 2                 ; мяч улетает — к центру
+.chase:
+        sub eax, PADDLE / 2            ; цель: мяч напротив середины ракетки
+        cmp eax, [paddle_r]
+        je .done
+        jl .up
+        inc dword [paddle_r]
+        jmp .clamp
+.up:
+        dec dword [paddle_r]
+.clamp:
+        lea rbp, [paddle_r]
+        call clamp
+.done:
         ret
 
 ; clamp: не выпускать ракетку [rbp] за поле
