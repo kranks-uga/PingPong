@@ -13,6 +13,10 @@
         VMIN equ 6                     ; индекс в c_cc: минимум байт для read
         TCGETS equ 0x5401              ; ioctl: прочитать настройки терминала
         TCSETS equ 0x5402              ; ioctl: записать настройки терминала
+        MENU_TOP equ 10                ; строка первого пункта меню
+        MENU_COL equ 26                ; столбец курсора меню
+        MENU_VAL equ 40                ; столбец значения пункта
+        MENU_ITEMS equ 3               ; сколько пунктов в меню
 
         section .data
 pos:
@@ -67,6 +71,82 @@ score_txt:
 ts:
         dq 0, 50000000
 
+; --- меню ---
+title_txt:
+        db "P O N G"
+        title_len equ $-title_txt
+help1:
+        db "W/S - выбор   A/D - изменить"
+        help1_len equ $-help1
+help2:
+        db "Enter - старт   Q - выход"
+        help2_len equ $-help2
+gt:
+        db ">"
+lt_sp:
+        db "< "
+tail:
+        db " >          "              ; хвост пробелов стирает прошлое значение
+        tail_len equ $-tail
+lbl_mode:
+        db "Режим:"
+        lbl_mode_len equ $-lbl_mode
+lbl_speed:
+        db "Скорость:"
+        lbl_speed_len equ $-lbl_speed
+lbl_win:
+        db "До очков:"
+        lbl_win_len equ $-lbl_win
+m_two:
+        db "Вдвоём"
+        m_two_len equ $-m_two
+m_cpu:
+        db "Компьютер"
+        m_cpu_len equ $-m_cpu
+s_slow:
+        db "Медленно"
+        s_slow_len equ $-s_slow
+s_norm:
+        db "Нормально"
+        s_norm_len equ $-s_norm
+s_fast:
+        db "Быстро"
+        s_fast_len equ $-s_fast
+w_5:
+        db "5"
+w_10:
+        db "10"
+w_21:
+        db "21"
+
+; таблицы строк: пары (адрес, длина) по 16 байт
+opt_lbl:
+        dq lbl_mode, lbl_mode_len, lbl_speed, lbl_speed_len, lbl_win, lbl_win_len
+mode_tab:
+        dq m_two, m_two_len, m_cpu, m_cpu_len
+speed_tab:
+        dq s_slow, s_slow_len, s_norm, s_norm_len, s_fast, s_fast_len
+win_tab:
+        dq w_5, 1, w_10, 2, w_21, 2
+opt_tabs:
+        dq mode_tab, speed_tab, win_tab
+opt_cnt:
+        dd 2, 3, 3                     ; сколько значений у каждого пункта
+opt_val:
+        dd 0, 1, 1                     ; выбранные значения (по умолчанию)
+speed_ns:
+        dq 80000000, 50000000, 30000000 ; пауза кадра для каждой скорости
+win_vals:
+        dd 5, 10, 21
+menu_row:
+        dd 0                           ; пункт под курсором
+
+; результат меню
+game_mode:
+        dd 0                           ; 0 = вдвоём, 1 = против компьютера
+win_score:
+        dd 10                          ; до скольких очков игра
+
         section .bss                   ; неинициализированные данные (нули)
 orig:
         resb 36                        ; исходные настройки терминала
@@ -106,11 +186,16 @@ _start:
         lea rdx, [raw]
         syscall
 
-        lea rsi, [clear]
-        mov edx, clear_len
-        call print
         lea rsi, [hide]
         mov edx, hide_len
+        call print
+
+        call menu                      ; вернёт eax = 1, если нажали q
+        test eax, eax
+        jnz quit
+
+        lea rsi, [clear]
+        mov edx, clear_len
         call print
 
         mov r13d, 1                    ; нижний
@@ -306,6 +391,176 @@ handle_input:
         mov eax, 1
         ret
 
+; menu: стартовый экран. W/S (стрелки) — пункт, A/D (стрелки) — значение,
+; Enter/пробел — старт. Пишет game_mode, win_score и скорость в ts
+; возвращает eax = 1, если нажата q или Ctrl+C, иначе 0
+menu:
+        lea rsi, [clear]
+        mov edx, clear_len
+        call print
+        mov edi, 6
+        mov esi, (X - title_len) / 2 + 1
+        lea r8, [title_txt]
+        mov r9d, title_len
+        call put
+        mov edi, 18
+        mov esi, (X - 28) / 2 + 1      ; 28 символов на экране (кириллица — 2 байта)
+        lea r8, [help1]
+        mov r9d, help1_len
+        call put
+        mov edi, 19
+        mov esi, (X - 25) / 2 + 1
+        lea r8, [help2]
+        mov r9d, help2_len
+        call put
+
+        xor r12d, r12d                 ; подписи пунктов
+.label:
+        lea edi, [r12*2 + MENU_TOP]
+        mov esi, MENU_COL + 2
+        mov rax, r12
+        shl rax, 4
+        lea rcx, [opt_lbl]
+        mov r8, [rcx + rax]
+        mov r9d, [rcx + rax + 8]
+        call put
+        inc r12d
+        cmp r12d, MENU_ITEMS
+        jl .label
+
+.draw:                                 ; курсор и значения
+        xor r12d, r12d
+.row:
+        lea r8, [space]
+        cmp r12d, [menu_row]
+        jne .mark
+        lea r8, [gt]
+.mark:
+        lea edi, [r12*2 + MENU_TOP]
+        mov esi, MENU_COL
+        mov r9d, 1
+        call put
+        lea edi, [r12*2 + MENU_TOP]
+        mov esi, MENU_VAL
+        lea r8, [lt_sp]
+        mov r9d, 2
+        call put
+        lea rax, [opt_tabs]
+        mov rax, [rax + r12*8]         ; таблица строк этого пункта
+        lea rcx, [opt_val]
+        mov ecx, [rcx + r12*4]         ; выбранное значение
+        shl ecx, 4
+        mov rsi, [rax + rcx]
+        mov edx, [rax + rcx + 8]
+        call print
+        lea rsi, [tail]
+        mov edx, tail_len
+        call print
+        inc r12d
+        cmp r12d, MENU_ITEMS
+        jl .row
+
+.wait:
+        xor eax, eax                   ; read(0, keys, 16)
+        xor edi, edi
+        lea rsi, [keys]
+        mov edx, 16
+        syscall
+        test eax, eax
+        jg .got
+        mov eax, 35                    ; ничего не нажато — подождать
+        lea rdi, [ts]
+        xor esi, esi
+        syscall
+        jmp .wait
+.got:
+        mov r14d, eax                  ; сколько байт прочитали
+        xor r13d, r13d
+        lea r15, [keys]
+.key:
+        movzx eax, byte [r15+r13]
+        cmp al, 'q'
+        je .quit
+        cmp al, 3                      ; Ctrl+C
+        je .quit
+        cmp al, 10                     ; Enter
+        je .start
+        cmp al, 13
+        je .start
+        cmp al, ' '
+        je .start
+        cmp al, 'w'
+        je .up
+        cmp al, 'A'                    ; стрелка вверх
+        je .up
+        cmp al, 's'
+        je .down
+        cmp al, 'B'                    ; стрелка вниз
+        je .down
+        cmp al, 'a'
+        je .left
+        cmp al, 'D'                    ; стрелка влево
+        je .left
+        cmp al, 'd'
+        je .right
+        cmp al, 'C'                    ; стрелка вправо
+        je .right
+.next:
+        inc r13d
+        cmp r13d, r14d
+        jl .key
+        jmp .draw
+.up:
+        dec dword [menu_row]
+        jns .next
+        mov dword [menu_row], MENU_ITEMS - 1
+        jmp .next
+.down:
+        inc dword [menu_row]
+        cmp dword [menu_row], MENU_ITEMS
+        jl .next
+        mov dword [menu_row], 0
+        jmp .next
+.left:
+        mov ecx, [menu_row]
+        lea rdx, [opt_val]
+        dec dword [rdx + rcx*4]
+        jns .next
+        lea rax, [opt_cnt]
+        mov eax, [rax + rcx*4]         ; по кругу: на последнее значение
+        dec eax
+        mov [rdx + rcx*4], eax
+        jmp .next
+.right:
+        mov ecx, [menu_row]
+        lea rdx, [opt_val]
+        mov eax, [rdx + rcx*4]
+        inc eax
+        lea rsi, [opt_cnt]
+        cmp eax, [rsi + rcx*4]
+        jl .store
+        xor eax, eax                   ; по кругу: на первое значение
+.store:
+        mov [rdx + rcx*4], eax
+        jmp .next
+
+.start:
+        mov eax, [opt_val]             ; режим
+        mov [game_mode], eax
+        mov eax, [opt_val+4]           ; скорость -> пауза кадра
+        lea rdx, [speed_ns]
+        mov rax, [rdx + rax*8]
+        mov [ts+8], rax
+        mov eax, [opt_val+8]           ; до скольких очков
+        lea rdx, [win_vals]
+        mov eax, [rdx + rax*4]
+        mov [win_score], eax
+        xor eax, eax
+        ret
+.quit:
+        mov eax, 1
+        ret
+
 ; clamp: не выпускать ракетку [rbp] за поле
 clamp:
         cmp dword [rbp], 2
@@ -451,6 +706,7 @@ arena_x:
 .done:
         ret
 
+; arena_y вертикальная линия, r13d = номер столбца
 arena_y:
         mov r12d, 1
 .loop:
