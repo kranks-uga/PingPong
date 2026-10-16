@@ -18,6 +18,12 @@
         MENU_VAL equ 40                ; столбец значения пункта
         MENU_ITEMS equ 3               ; сколько пунктов в меню
         BOT_SEE equ X - 22             ; с какого столбца бот следит за мячом
+        KEY_UP equ 256                 ; коды стрелок от next_key
+        KEY_DOWN equ 257
+        KEY_RIGHT equ 258
+        KEY_LEFT equ 259
+        EV_TAP equ 0                   ; next_key: старый терминал, просто символ
+        EV_RELEASE equ 3               ; next_key: кнопку отпустили
 
         section .data
 pos:
@@ -31,6 +37,13 @@ hide:
 show:
         db 27, "[?25h"
         show_len equ $-show
+kb_on:                                 ; протокол клавиатуры kitty: присылать
+        db 27, "[>11u"                 ; нажатие, повтор и отпускание каждой клавиши,
+        db 27, "[?u"                   ; и спросить, поддерживается ли он
+        kb_on_len equ $-kb_on
+kb_off:
+        db 27, "[<u"
+        kb_off_len equ $-kb_off
 block:
         db 0xE2, 0x96, 0x88            ; █
         block_len equ $-block
@@ -156,7 +169,17 @@ orig:
 raw:
         resb 36                        ; наши «сырые» настройки
 keys:
-        resb 16                        ; буфер для нажатых клавиш
+        resb 64                        ; буфер для нажатых клавиш
+keys_len equ $-keys
+held:
+        resb 4                         ; зажаты ли: w, s, вверх, вниз
+tap:
+        resb 4                         ; нажаты в этом кадре (старый терминал)
+kitty:
+        resb 1                         ; 1 = терминал ответил на ESC [ ? u
+csi_f:
+        resd 4                         ; поля ESC-последовательности: код, модификаторы,
+                                       ; событие, мусор
 old_l:
         resd 1                         ; позиции ракеток до ввода
 old_r:
@@ -195,6 +218,9 @@ _start:
 
         lea rsi, [hide]
         mov edx, hide_len
+        call print
+        lea rsi, [kb_on]
+        mov edx, kb_on_len
         call print
 
         call menu                      ; вернёт eax = 1, если нажали q
@@ -360,51 +386,83 @@ quit:
         lea rsi, [show]
         mov edx, show_len
         call print
+        lea rsi, [kb_off]
+        mov edx, kb_off_len
+        call print
         mov eax, 60
         xor edi, edi
         syscall
 
-; handle_input: читает все нажатые клавиши, двигает ракетки
-; левая: w/s, правая: стрелки (приходят как ESC [ A / ESC [ B)
+; handle_input: читает все события клавиатуры, двигает ракетки
+; левая: w/s, правая: стрелки. Ракетка едет на клетку за кадр, пока кнопка зажата
 ; возвращает eax = 1, если нажата q или Ctrl+C, иначе 0
 handle_input:
-        xor eax, eax                   ; read(0, keys, 16)
+        xor eax, eax                   ; read(0, keys, keys_len)
         xor edi, edi
         lea rsi, [keys]
-        mov edx, 16
+        mov edx, keys_len
         syscall
         test eax, eax                  ; 0 = ничего не нажато
-        jle .clamp
+        jle .move
         mov r14d, eax                  ; сколько байт прочитали
-        xor r13d, r13d                 ; индекс текущей клавиши
+        xor r13d, r13d                 ; позиция в буфере
         lea r15, [keys]
 .next:
-        movzx eax, byte [r15+r13]
-        cmp al, 'q'
+        call next_key
+        cmp eax, -1
+        je .move
+        cmp edx, EV_RELEASE
+        je .slot
+        cmp eax, 'q'
         je .quit
-        cmp al, 3                      ; Ctrl+C
+        cmp eax, 3                     ; Ctrl+C
         je .quit
-        cmp al, 'w'
-        jne .not_w
+.slot:
+        xor ecx, ecx                   ; номер кнопки в held/tap
+        cmp eax, 'w'
+        je .found
+        inc ecx
+        cmp eax, 's'
+        je .found
+        inc ecx
+        cmp eax, KEY_UP
+        je .found
+        inc ecx
+        cmp eax, KEY_DOWN
+        jne .next
+.found:
+        lea rsi, [tap]
+        cmp edx, EV_TAP
+        jne .event
+        mov byte [rsi + rcx], 1        ; без отпусканий: сдвиг на одну клетку
+        jmp .next
+.event:
+        lea rsi, [held]
+        cmp edx, EV_RELEASE
+        setne byte [rsi + rcx]         ; нажатие/повтор = 1, отпускание = 0
+        jmp .next
+.move:
+        mov eax, [held]
+        or eax, [tap]                  ; по байту на кнопку
+        mov dword [tap], 0
+        test al, al
+        jz .not_w
         dec dword [paddle_l]
 .not_w:
-        cmp al, 's'
-        jne .not_s
+        test ah, ah
+        jz .not_s
         inc dword [paddle_l]
 .not_s:
         cmp dword [game_mode], 0       ; против бота стрелки не работают
-        jne .not_down
-        cmp al, 'A'                    ; стрелка вверх
-        jne .not_up
+        jne .clamp
+        shr eax, 16
+        test al, al
+        jz .not_up
         dec dword [paddle_r]
 .not_up:
-        cmp al, 'B'                    ; стрелка вниз
-        jne .not_down
+        test ah, ah
+        jz .clamp
         inc dword [paddle_r]
-.not_down:
-        inc r13d
-        cmp r13d, r14d
-        jl .next
 .clamp:
         lea rbp, [paddle_l]
         call clamp
@@ -414,6 +472,102 @@ handle_input:
         ret
 .quit:
         mov eax, 1
+        ret
+
+; next_key: r15 = буфер, r13d = позиция (сдвигается), r14d = длина
+; возвращает eax = клавиша (символ, 3 = Ctrl+C, KEY_* = стрелки, 0 = неизвестная,
+; -1 = буфер кончился), edx = событие: 1 нажатие, 2 повтор, EV_RELEASE отпускание,
+; EV_TAP — старый терминал без событий
+; понимает обычные символы, ESC [ A..D и kitty-формат ESC [ код ; мод : событие u
+next_key:
+        cmp r13d, r14d
+        jl .have
+        mov eax, -1
+        ret
+.have:
+        movzx eax, byte [r15 + r13]
+        inc r13d
+        mov edx, EV_TAP
+        cmp eax, 27
+        jne .ret                       ; обычный символ
+        cmp r13d, r14d
+        jge .ret                       ; одиночный ESC
+        cmp byte [r15 + r13], '['
+        jne .ret
+        inc r13d
+        xor eax, eax
+        mov [csi_f], eax
+        mov [csi_f + 4], eax
+        mov [csi_f + 8], eax
+        xor ecx, ecx                   ; текущее поле
+        xor esi, esi                   ; сколько было ';'
+.byte:
+        cmp r13d, r14d
+        jge .unknown                   ; последовательность оборвалась
+        movzx eax, byte [r15 + r13]
+        inc r13d
+        cmp eax, '0'
+        jb .not_digit
+        cmp eax, '9'
+        ja .not_digit
+        sub eax, '0'
+        lea rdi, [csi_f]
+        imul edx, [rdi + rcx*4], 10
+        add edx, eax
+        mov [rdi + rcx*4], edx
+        jmp .byte
+.not_digit:
+        cmp eax, ';'
+        jne .not_semi
+        inc esi
+        mov ecx, 3                     ; третье и дальше поле — в мусор
+        cmp esi, 1
+        jne .byte
+        mov ecx, 1                     ; модификаторы
+        jmp .byte
+.not_semi:
+        cmp eax, ':'
+        jne .not_colon
+        cmp ecx, 1
+        mov ecx, 3                     ; ':' после кода — альтернативные коды, мусор
+        jne .byte
+        mov ecx, 2                     ; ':' после модификаторов — тип события
+        jmp .byte
+.not_colon:
+        cmp eax, '?'                   ; ESC [ ? флаги u — ответ kitty на запрос
+        jne .not_query
+        mov byte [kitty], 1
+.not_query:
+        cmp eax, 0x40                  ; финальный байт: 0x40..0x7E
+        jb .byte                       ; '>' и прочее пропускаем
+        mov edx, [csi_f + 8]           ; событие
+        test edx, edx
+        jnz .ev_ok
+        movzx edx, byte [kitty]        ; не указано: в kitty это нажатие (1),
+                                       ; в старом терминале — EV_TAP (0)
+.ev_ok:
+        cmp eax, 'u'
+        je .unicode
+        sub eax, 'A'
+        cmp eax, 3
+        ja .unknown
+        add eax, KEY_UP                ; A..D -> вверх, вниз, вправо, влево
+        ret
+.unicode:
+        mov eax, [csi_f]
+        mov ecx, [csi_f + 4]
+        dec ecx
+        test ecx, 4                    ; зажат Ctrl?
+        jz .ret
+        cmp eax, 'a'
+        jb .ret
+        cmp eax, 'z'
+        ja .ret
+        sub eax, 96                    ; Ctrl+буква -> управляющий символ (c -> 3)
+.ret:
+        ret
+.unknown:
+        xor eax, eax
         ret
 
 ; menu: стартовый экран. W/S (стрелки) — пункт, A/D (стрелки) — значение,
@@ -486,10 +640,10 @@ menu:
         jl .row
 
 .wait:
-        xor eax, eax                   ; read(0, keys, 16)
+        xor eax, eax                   ; read(0, keys, keys_len)
         xor edi, edi
         lea rsi, [keys]
-        mov edx, 16
+        mov edx, keys_len
         syscall
         test eax, eax
         jg .got
@@ -502,39 +656,39 @@ menu:
         mov r14d, eax                  ; сколько байт прочитали
         xor r13d, r13d
         lea r15, [keys]
-.key:
-        movzx eax, byte [r15+r13]
-        cmp al, 'q'
-        je .quit
-        cmp al, 3                      ; Ctrl+C
-        je .quit
-        cmp al, 10                     ; Enter
-        je .start
-        cmp al, 13
-        je .start
-        cmp al, ' '
-        je .start
-        cmp al, 'w'
-        je .up
-        cmp al, 'A'                    ; стрелка вверх
-        je .up
-        cmp al, 's'
-        je .down
-        cmp al, 'B'                    ; стрелка вниз
-        je .down
-        cmp al, 'a'
-        je .left
-        cmp al, 'D'                    ; стрелка влево
-        je .left
-        cmp al, 'd'
-        je .right
-        cmp al, 'C'                    ; стрелка вправо
-        je .right
 .next:
-        inc r13d
-        cmp r13d, r14d
-        jl .key
-        jmp .draw
+        call next_key
+        cmp eax, -1
+        je .draw
+        cmp edx, EV_RELEASE            ; в меню отпускания не нужны
+        je .next
+        cmp eax, 'q'
+        je .quit
+        cmp eax, 3                     ; Ctrl+C
+        je .quit
+        cmp eax, 10                    ; Enter
+        je .start
+        cmp eax, 13
+        je .start
+        cmp eax, ' '
+        je .start
+        cmp eax, 'w'
+        je .up
+        cmp eax, KEY_UP
+        je .up
+        cmp eax, 's'
+        je .down
+        cmp eax, KEY_DOWN
+        je .down
+        cmp eax, 'a'
+        je .left
+        cmp eax, KEY_LEFT
+        je .left
+        cmp eax, 'd'
+        je .right
+        cmp eax, KEY_RIGHT
+        je .right
+        jmp .next
 .up:
         dec dword [menu_row]
         jns .next
