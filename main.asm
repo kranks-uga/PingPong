@@ -17,6 +17,7 @@
         MENU_COL equ 26                ; столбец курсора меню
         MENU_VAL equ 40                ; столбец значения пункта
         MENU_ITEMS equ 3               ; сколько пунктов в меню
+        BOT_SEE equ X - 22             ; с какого столбца бот следит за мячом
 
         section .data
 pos:
@@ -138,6 +139,8 @@ speed_ns:
         dq 80000000, 50000000, 30000000 ; пауза кадра для каждой скорости
 win_vals:
         dd 5, 10, 21
+angle_tab:
+        dd -2, -1, 0, 1, 2             ; dy для клеток ракетки сверху вниз
 menu_row:
         dd 0                           ; пункт под курсором
 
@@ -162,6 +165,8 @@ prev_y:
         resd 1                         ; строка мяча до хода
 bot_tick:
         resd 1                         ; бот ходит через кадр
+bot_aim:
+        resd 1                         ; какой клеткой ракетки бот отобьёт мяч
 
         section .text
 _start:
@@ -265,14 +270,20 @@ game_loop:
         mov eax, [ball_y]
         mov [prev_y], eax
         add eax, [ball_dy]
-        mov [ball_y], eax
-        cmp eax, 2
-        jle flip_y
+        cmp eax, 2                     ; при dy = ±2 мяч может проскочить
+        jle top_wall                   ; на рамку — прижимаем его к краю
         cmp eax, Y - 1
-        jl y_ok
+        jge bottom_wall
+        jmp y_store
+top_wall:
+        mov eax, 2
+        jmp flip_y
+bottom_wall:
+        mov eax, Y - 1
 flip_y:
         neg dword [ball_dy]
-y_ok:
+y_store:
+        mov [ball_y], eax
 ; потом по горизонтали (ракетки)
         mov eax, [ball_x]
         add eax, [ball_dx]
@@ -287,12 +298,14 @@ left_side:
         call hit_paddle
         test eax, eax
         jz goal_right                  ; левый промахнулся
+        call aim
         jmp bounce
 right_side:
         lea rbp, [paddle_r]
         call hit_paddle
         test eax, eax
         jz goal_left                   ; правый промахнулся
+        call aim
 bounce:
         neg dword [ball_dx]            ; отскок от ракетки
         mov eax, [ball_dx]
@@ -306,6 +319,10 @@ goal_right:
 serve:                                 ; мяч в центр, летит к проигравшему
         mov dword [ball_x], X / 2
         mov dword [ball_y], Y / 2
+        rdtsc                          ; подача всегда пологая (dy = ±1) в случайную
+        and eax, 2                     ; сторону: иначе крутой мяч, который бот
+        dec eax                        ; пропустил, летит к нему снова тем же путём
+        mov [ball_dy], eax             ; 0 -> -1, 2 -> 1
         call draw_score
 moved:
 
@@ -569,18 +586,43 @@ menu:
         mov eax, 1
         ret
 
-; bot: двигает правую ракетку к мячу, пока он летит к ней,
-; иначе возвращает в центр. Ходит раз в два кадра — чтобы можно было обыграть
+; bot: пока мяч летит к правой ракетке, прикидывает по прямой, где он её
+; пересечёт, и подставляет под него случайную клетку ракетки;
+; иначе возвращается в центр.
+; Ходит раз в два кадра и начинает «видеть» мяч только с BOT_SEE — чтобы можно было обыграть
 bot:
         xor dword [bot_tick], 1
         jz .done                       ; чётный кадр — пропускаем
-        mov eax, [ball_y]
         cmp dword [ball_dx], 0
-        jg .chase
-        mov eax, Y / 2                 ; мяч улетает — к центру
+        jg .coming
+        rdtsc                          ; мяч улетает — выбрать клетку для
+        xor edx, edx                   ; следующего удара (0..PADDLE-1),
+        mov ecx, PADDLE                ; иначе бот всегда бьёт серединой
+        div ecx                        ; и мяч летит по прямой
+        mov [bot_aim], edx
+        jmp .center
+.coming:
+        cmp dword [ball_x], BOT_SEE
+        jge .predict
+.center:
+        mov eax, Y / 2 - PADDLE / 2    ; мяч ещё далеко — ждать в центре
+        jmp .chase
+.predict:                              ; где мяч будет у ракетки, если лететь
+        mov eax, PADDLE_R_X            ; по прямой: y + dy * (сколько осталось).
+        sub eax, [ball_x]              ; Отскоки от стенок бот не учитывает —
+        imul eax, [ball_dy]            ; крутой мяч от стенки его обманывает
+        add eax, [ball_y]
+        cmp eax, 2
+        jge .top_ok
+        mov eax, 2
+.top_ok:
+        cmp eax, Y - 1
+        jle .bottom_ok
+        mov eax, Y - 1
+.bottom_ok:
+        sub eax, [bot_aim]             ; цель: мяч напротив выбранной клетки
 .chase:
-        sub eax, PADDLE / 2            ; цель: мяч напротив середины ракетки
-        cmp eax, [paddle_r]
+        cmp eax, [paddle_r]            ; eax = нужная верхняя клетка ракетки
         je .done
         jl .up
         inc dword [paddle_r]
@@ -620,6 +662,23 @@ hit_paddle:
         ret
 .hit:
         mov eax, 1
+        ret
+
+; aim: rbp = ракетка; dy зависит от клетки, в которую попал мяч:
+; центр — прямо, края — круто вверх/вниз
+aim:
+        mov eax, [ball_y]
+        sub eax, [rbp]                 ; 0..PADDLE-1
+        jns .pos
+        xor eax, eax                   ; задел по диагонали выше ракетки
+.pos:
+        cmp eax, PADDLE - 1
+        jle .ok
+        mov eax, PADDLE - 1            ; задел по диагонали ниже ракетки
+.ok:
+        lea rcx, [angle_tab]
+        mov eax, [rcx + rax*4]
+        mov [ball_dy], eax
         ret
 
 ; draw_score: рисует счёт поверх верхней стенки
