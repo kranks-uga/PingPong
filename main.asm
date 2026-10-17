@@ -38,8 +38,9 @@ show:
         db 27, "[?25h"
         show_len equ $-show
 kb_on:                                 ; протокол клавиатуры kitty: присылать
-        db 27, "[>11u"                 ; нажатие, повтор и отпускание каждой клавиши,
-        db 27, "[?u"                   ; и спросить, поддерживается ли он
+        db 27, "[>15u"                 ; нажатие, повтор и отпускание каждой клавиши
+        db 27, "[?u"                   ; плюс её код в US-раскладке (флаг 4),
+                                       ; и спросить, поддерживается ли он
         kb_on_len equ $-kb_on
 kb_off:
         db 27, "[<u"
@@ -178,8 +179,8 @@ tap:
 kitty:
         resb 1                         ; 1 = терминал ответил на ESC [ ? u
 csi_f:
-        resd 4                         ; поля ESC-последовательности: код, модификаторы,
-                                       ; событие, мусор
+        resd 5                         ; поля ESC-последовательности: код, модификаторы,
+                                       ; событие, мусор, код в US-раскладке
 old_l:
         resd 1                         ; позиции ракеток до ввода
 old_r:
@@ -499,6 +500,7 @@ next_key:
         mov [csi_f], eax
         mov [csi_f + 4], eax
         mov [csi_f + 8], eax
+        mov [csi_f + 16], eax
         xor ecx, ecx                   ; текущее поле
         xor esi, esi                   ; сколько было ';'
 .byte:
@@ -529,8 +531,19 @@ next_key:
         cmp eax, ':'
         jne .not_colon
         cmp ecx, 1
-        mov ecx, 3                     ; ':' после кода — альтернативные коды, мусор
-        jne .byte
+        je .ev_field
+        test esi, esi
+        jnz .junk                      ; ':' в дальнейших полях — мусор
+        test ecx, ecx
+        jz .junk                       ; код:shifted — shifted не нужен
+        cmp ecx, 3
+        jne .junk
+        mov ecx, 4                     ; код:shifted:base — клавиша в US-раскладке
+        jmp .byte
+.junk:
+        mov ecx, 3
+        jmp .byte
+.ev_field:
         mov ecx, 2                     ; ':' после модификаторов — тип события
         jmp .byte
 .not_colon:
@@ -554,9 +567,14 @@ next_key:
         add eax, KEY_UP                ; A..D -> вверх, вниз, вправо, влево
         ret
 .unicode:
+        mov eax, [csi_f + 16]          ; в русской раскладке «ц» придёт как
+        test eax, eax                  ; ESC [ 1094 :: 119 u — берём 119 = 'w'
+        jnz .base
         mov eax, [csi_f]
+.base:
         mov ecx, [csi_f + 4]
         dec ecx
+        js .ret                        ; модификаторы не указаны (ESC [ 119 u)
         test ecx, 4                    ; зажат Ctrl?
         jz .ret
         cmp eax, 'a'
