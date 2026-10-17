@@ -127,6 +127,28 @@ s_norm:
 s_fast:
         db "Быстро"
         s_fast_len equ $-s_fast
+; конец игры: (адрес, длина в байтах, длина на экране) по 16 байт
+over_tab:
+        dq won_l, won_l_len, 20
+        dq won_r, won_r_len, 21
+        dq won_you, won_you_len, 12
+        dq won_cpu, won_cpu_len, 18
+won_l:
+        db "Победил левый игрок!"
+        won_l_len equ $-won_l
+won_r:
+        db "Победил правый игрок!"
+        won_r_len equ $-won_r
+won_you:
+        db "Вы победили!"
+        won_you_len equ $-won_you
+won_cpu:
+        db "Победил компьютер!"
+        won_cpu_len equ $-won_cpu
+over_help:
+        db "Enter - меню   Q - выход"
+        over_help_len equ $-over_help
+        OVER_HELP_W equ 24             ; символов на экране
 w_5:
         db "5"
 w_10:
@@ -223,6 +245,19 @@ _start:
         lea rsi, [kb_on]
         mov edx, kb_on_len
         call print
+
+new_game:                              ; сюда же возвращаемся после конца партии
+        xor eax, eax
+        mov [score_l], eax
+        mov [score_r], eax
+        mov [held], eax                ; иначе ракетка поедет сама, если кнопку
+        mov [tap], eax                 ; отпустили на экране конца игры
+        mov dword [ball_x], X / 2
+        mov dword [ball_y], Y / 2
+        mov dword [ball_dx], 1
+        mov dword [ball_dy], 1
+        mov dword [paddle_l], 10
+        mov dword [paddle_r], 10
 
         call menu                      ; вернёт eax = 1, если нажали q
         test eax, eax
@@ -351,6 +386,10 @@ serve:                                 ; мяч в центр, летит к п�
         dec eax                        ; пропустил, летит к нему снова тем же путём
         mov [ball_dy], eax             ; 0 -> -1, 2 -> 1
         call draw_score
+        call game_over                 ; кто-то набрал нужный счёт?
+        test eax, eax
+        jg new_game                    ; 1 = Enter: в меню
+        js quit                        ; -1 = q
 moved:
 
 ; 4. нарисовать новое
@@ -851,6 +890,80 @@ aim:
         lea rcx, [angle_tab]
         mov eax, [rcx + rax*4]
         mov [ball_dy], eax
+        ret
+
+; game_over: если кто-то набрал win_score — пишет победителя и ждёт клавишу
+; возвращает eax = 0, если играем дальше, 1 = в меню (Enter/пробел), -1 = выход (q)
+game_over:
+        mov eax, [win_score]
+        xor ecx, ecx                   ; 0 = левый, 1 = правый
+        cmp [score_l], eax
+        jge .won
+        inc ecx
+        cmp [score_r], eax
+        jge .won
+        xor eax, eax
+        ret
+.won:
+        cmp dword [game_mode], 1       ; против компьютера: «вы» / «компьютер»
+        jne .text
+        add ecx, 2
+.text:
+        lea rax, [over_tab]
+        imul ecx, ecx, 24
+        add rax, rcx
+        mov r8, [rax]
+        mov r9d, [rax + 8]
+        mov ecx, [rax + 16]
+        mov esi, X
+        sub esi, ecx
+        shr esi, 1
+        inc esi                        ; по центру
+        mov edi, Y / 2 - 1
+        call put
+        mov edi, Y / 2 + 1
+        mov esi, (X - OVER_HELP_W) / 2 + 1
+        lea r8, [over_help]
+        mov r9d, over_help_len
+        call put
+.wait:
+        xor eax, eax                   ; read(0, keys, keys_len)
+        xor edi, edi
+        lea rsi, [keys]
+        mov edx, keys_len
+        syscall
+        test eax, eax
+        jg .got
+        mov eax, 35                    ; ничего не нажато — подождать
+        lea rdi, [ts]
+        xor esi, esi
+        syscall
+        jmp .wait
+.got:
+        mov r14d, eax
+        xor r13d, r13d
+        lea r15, [keys]
+.next:
+        call next_key
+        cmp eax, -1
+        je .wait
+        cmp edx, EV_RELEASE
+        je .next
+        cmp eax, 'q'
+        je .quit
+        cmp eax, 3                     ; Ctrl+C
+        je .quit
+        cmp eax, 10                    ; Enter
+        je .menu
+        cmp eax, 13
+        je .menu
+        cmp eax, ' '
+        jne .next
+.menu:
+        mov eax, 1
+        ret
+.quit:
+        mov eax, -1
         ret
 
 ; draw_score: рисует счёт поверх верхней стенки
