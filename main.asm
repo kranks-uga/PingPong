@@ -17,6 +17,7 @@
         MENU_COL equ 26                ; столбец курсора меню
         MENU_VAL equ 40                ; столбец значения пункта
         MENU_ITEMS equ 3               ; сколько пунктов в меню
+        WIN_ROW equ 2                  ; пункт «До очков» — число, а не строка из таблицы
         BOT_SEE equ X - 22             ; с какого столбца бот следит за мячом
         KEY_UP equ 256                 ; коды стрелок от next_key
         KEY_DOWN equ 257
@@ -149,12 +150,8 @@ over_help:
         db "Enter - меню   Q - выход"
         over_help_len equ $-over_help
         OVER_HELP_W equ 24             ; символов на экране
-w_5:
-        db "5"
-w_10:
-        db "10"
-w_21:
-        db "21"
+win_txt:
+        db "00"                        ; число очков для меню
 
 ; таблицы строк: пары (адрес, длина) по 16 байт
 opt_lbl:
@@ -163,18 +160,16 @@ mode_tab:
         dq m_two, m_two_len, m_cpu, m_cpu_len
 speed_tab:
         dq s_slow, s_slow_len, s_norm, s_norm_len, s_fast, s_fast_len
-win_tab:
-        dq w_5, 1, w_10, 2, w_21, 2
 opt_tabs:
-        dq mode_tab, speed_tab, win_tab
-opt_cnt:
-        dd 2, 3, 3                     ; сколько значений у каждого пункта
+        dq mode_tab, speed_tab, 0      ; у «До очков» таблицы нет — печатаем число
+opt_min:
+        dd 0, 0, 1                     ; наименьшее значение каждого пункта
+opt_max:
+        dd 1, 2, 99                    ; наибольшее значение каждого пункта
 opt_val:
-        dd 0, 1, 1                     ; выбранные значения (по умолчанию)
+        dd 0, 1, 10                    ; выбранные значения (по умолчанию)
 speed_ns:
         dq 80000000, 50000000, 30000000 ; пауза кадра для каждой скорости
-win_vals:
-        dd 5, 10, 21
 angle_tab:
         dd -2, -1, 0, 1, 2             ; dy для клеток ракетки сверху вниз
 menu_row:
@@ -681,13 +676,29 @@ menu:
         lea r8, [lt_sp]
         mov r9d, 2
         call put
-        lea rax, [opt_tabs]
-        mov rax, [rax + r12*8]         ; таблица строк этого пункта
         lea rcx, [opt_val]
         mov ecx, [rcx + r12*4]         ; выбранное значение
+        cmp r12d, WIN_ROW
+        je .number
+        lea rax, [opt_tabs]
+        mov rax, [rax + r12*8]         ; таблица строк этого пункта
         shl ecx, 4
         mov rsi, [rax + rcx]
         mov edx, [rax + rcx + 8]
+        jmp .value
+.number:                               ; 1..99 -> одна или две цифры
+        mov eax, ecx
+        mov cl, 10
+        div cl                         ; al = десятки, ah = единицы
+        add ax, 0x3030
+        mov [win_txt], ax
+        lea rsi, [win_txt]
+        mov edx, 2
+        cmp al, '0'
+        jne .value
+        inc rsi                        ; без ведущего нуля
+        dec edx
+.value:
         call print
         lea rsi, [tail]
         mov edx, tail_len
@@ -760,22 +771,24 @@ menu:
 .left:
         mov ecx, [menu_row]
         lea rdx, [opt_val]
-        dec dword [rdx + rcx*4]
-        jns .next
-        lea rax, [opt_cnt]
-        mov eax, [rax + rcx*4]         ; по кругу: на последнее значение
+        mov eax, [rdx + rcx*4]
         dec eax
-        mov [rdx + rcx*4], eax
-        jmp .next
+        lea rsi, [opt_min]
+        cmp eax, [rsi + rcx*4]
+        jge .store
+        lea rsi, [opt_max]
+        mov eax, [rsi + rcx*4]         ; по кругу: на последнее значение
+        jmp .store
 .right:
         mov ecx, [menu_row]
         lea rdx, [opt_val]
         mov eax, [rdx + rcx*4]
         inc eax
-        lea rsi, [opt_cnt]
+        lea rsi, [opt_max]
         cmp eax, [rsi + rcx*4]
-        jl .store
-        xor eax, eax                   ; по кругу: на первое значение
+        jle .store
+        lea rsi, [opt_min]
+        mov eax, [rsi + rcx*4]         ; по кругу: на первое значение
 .store:
         mov [rdx + rcx*4], eax
         jmp .next
@@ -787,9 +800,7 @@ menu:
         lea rdx, [speed_ns]
         mov rax, [rdx + rax*8]
         mov [ts+8], rax
-        mov eax, [opt_val+8]           ; до скольких очков
-        lea rdx, [win_vals]
-        mov eax, [rdx + rax*4]
+        mov eax, [opt_val+8]           ; до скольких очков (1..99)
         mov [win_score], eax
         xor eax, eax
         ret
