@@ -3,7 +3,8 @@
 
         X equ 80                       ; ширина поля
         Y equ 24                       ; высота поля
-        PADDLE equ 5                   ; длина ракетки
+        PADDLE equ 5                   ; длина ракетки в клетках
+        PADDLE_H equ PADDLE * 2        ; длина ракетки в половинках клетки
         PADDLE_L_X equ 2               ; столбец левой ракетки
         PADDLE_R_X equ X - 1           ; столбец правой ракетки
         ISIG equ 1                     ; флаг: Ctrl+C убивает программу
@@ -49,6 +50,10 @@ kb_off:
 block:
         db 0xE2, 0x96, 0x88            ; █
         block_len equ $-block
+half_top:
+        db 0xE2, 0x96, 0x80            ; ▀ — верхняя половина клетки
+half_bottom:
+        db 0xE2, 0x96, 0x84            ; ▄ — нижняя половина клетки
 h_line:
         db 0xE2, 0x94, 0x80            ; ─
 v_line:
@@ -74,9 +79,9 @@ ball_dx:
 ball_dy:
         dd 1
 paddle_l:
-        dd 10                          ; верхняя клетка левой ракетки
+        dd (Y / 2 - PADDLE / 2) * 2    ; верхняя клетка левой ракетки (в половинках)
 paddle_r:
-        dd 10                          ; верхняя клетка правой ракетки
+        dd (Y / 2 - PADDLE / 2) * 2    ; верхняя клетка правой ракетки (в половинках)
 score_l:
         dd 0
 score_r:
@@ -169,9 +174,10 @@ opt_max:
 opt_val:
         dd 0, 1, 10                    ; выбранные значения (по умолчанию)
 speed_ns:
-        dq 80000000, 50000000, 30000000 ; пауза кадра для каждой скорости
-angle_tab:
-        dd -2, -1, 0, 1, 2             ; dy для клеток ракетки сверху вниз
+        dq 40000000, 25000000, 15000000 ; половина паузы кадра: мяч ходит каждый второй кадр
+angle_rel:
+        dd -2, -2, -1, -1, 0, 0, 0, 1, 1, 2, 2 ; dy по положению мяча в ракетке
+                                               ; (сдвиг мяча от центра в половинках: -5..5)
 menu_row:
         dd 0                           ; пункт под курсором
 
@@ -204,10 +210,10 @@ old_r:
         resd 1
 prev_y:
         resd 1                         ; строка мяча до хода
-bot_tick:
-        resd 1                         ; бот ходит через кадр
 bot_aim:
         resd 1                         ; какой клеткой ракетки бот отобьёт мяч
+ball_tick:
+        resd 1                         ; мяч двигается через кадр (ракетки — каждый кадр)
 
         section .text
 _start:
@@ -251,8 +257,9 @@ new_game:                              ; сюда же возвращаемся 
         mov dword [ball_y], Y / 2
         mov dword [ball_dx], 1
         mov dword [ball_dy], 1
-        mov dword [paddle_l], 10
-        mov dword [paddle_r], 10
+        mov dword [paddle_l], (Y / 2 - PADDLE / 2) * 2
+        mov dword [paddle_r], (Y / 2 - PADDLE / 2) * 2
+        mov dword [ball_tick], 0
 
         call menu                      ; вернёт eax = 1, если нажали q
         test eax, eax
@@ -298,19 +305,10 @@ new_game:                              ; сюда же возвращаемся 
 
         call draw_score
 
-        lea r8, [block]
-        mov r9d, block_len
         call draw_paddles
 
 game_loop:
-; 1. стереть старый мяч (ракетки не трогаем — иначе мигают)
-        lea r8, [space]
-        mov r9d, 1
-        mov edi, [ball_y]
-        mov esi, [ball_x]
-        call put
-
-; 2. ввод
+; 1. ввод: ракетки двигаются каждый кадр, но на полклетки
         mov eax, [paddle_l]
         mov [old_l], eax
         mov eax, [paddle_r]
@@ -318,10 +316,24 @@ game_loop:
         call handle_input              ; вернёт eax = 1, если нажали q
         test eax, eax
         jnz quit
+
+; 2. мяч и бот — каждый второй кадр, чтобы ракетки двигались плавнее
+        xor dword [ball_tick], 1
+        jz ball_frame
+        jmp draw_frame
+
+ball_frame:
+; стереть старый мяч (ракетки не трогаем — иначе мигают)
+        lea r8, [space]
+        mov r9d, 1
+        mov edi, [ball_y]
+        mov esi, [ball_x]
+        call put
+
         cmp dword [game_mode], 1       ; против компьютера — правой ракеткой рулит бот
-        jne .no_bot
+        jne no_bot_frame
         call bot
-.no_bot:
+no_bot_frame:
 
 ; 3. движение мяча: сначала по вертикали (стенки)
         mov eax, [ball_y]
@@ -387,7 +399,8 @@ serve:                                 ; мяч в центр, летит к п�
         js quit                        ; -1 = q
 moved:
 
-; 4. нарисовать новое
+draw_frame:
+; 4. нарисовать ракетки
         lea rbp, [paddle_l]
         mov r14d, PADDLE_L_X
         mov r15d, [old_l]
@@ -396,12 +409,17 @@ moved:
         mov r14d, PADDLE_R_X
         mov r15d, [old_r]
         call update_paddle
+
+; мяч — только на своём кадре
+        cmp dword [ball_tick], 0
+        jne sleep_frame
         lea r8, [block]
         mov r9d, block_len
         mov edi, [ball_y]
         mov esi, [ball_x]
         call put
 
+sleep_frame:
 ; 5. пауза
         mov eax, 35
         lea rdi, [ts]
@@ -429,7 +447,8 @@ quit:
         syscall
 
 ; handle_input: читает все события клавиатуры, двигает ракетки
-; левая: w/s, правая: стрелки. Ракетка едет на клетку за кадр, пока кнопка зажата
+; левая: w/s, правая: стрелки. Пока кнопка зажата, ракетка едет на полклетки
+; за кадр; в старом терминале одно нажатие сдвигает её на целую клетку
 ; возвращает eax = 1, если нажата q или Ctrl+C, иначе 0
 handle_input:
         xor eax, eax                   ; read(0, keys, keys_len)
@@ -478,26 +497,33 @@ handle_input:
         jmp .next
 .move:
         mov eax, [held]
-        or eax, [tap]                  ; по байту на кнопку
+        mov edx, [tap]
         mov dword [tap], 0
+        test eax, eax                  ; в kitty-терминале кнопка зажата —
+        jz .tap_step                   ; шаг полклетки за кадр
+        mov ecx, 1
+        jmp .step
+.tap_step:
+        mov ecx, 2                     ; старый терминал: целая клетка за нажатие
+.step:
+        or eax, edx                    ; по байту на кнопку
         test al, al
         jz .not_w
-        dec dword [paddle_l]
+        sub dword [paddle_l], ecx
 .not_w:
         test ah, ah
         jz .not_s
-        inc dword [paddle_l]
+        add dword [paddle_l], ecx
 .not_s:
         cmp dword [game_mode], 0       ; против бота стрелки не работают
         jne .clamp
-        shr eax, 16
-        test al, al
+        test eax, 0x10000
         jz .not_up
-        dec dword [paddle_r]
+        sub dword [paddle_r], ecx
 .not_up:
-        test ah, ah
+        test eax, 0x1000000
         jz .clamp
-        inc dword [paddle_r]
+        add dword [paddle_r], ecx
 .clamp:
         lea rbp, [paddle_l]
         call clamp
@@ -811,10 +837,9 @@ menu:
 ; bot: пока мяч летит к правой ракетке, прикидывает по прямой, где он её
 ; пересечёт, и подставляет под него случайную клетку ракетки;
 ; иначе возвращается в центр.
-; Ходит раз в два кадра и начинает «видеть» мяч только с BOT_SEE — чтобы можно было обыграть
+; Двигается каждый кадр мяча на полклетки и начинает «видеть» мяч только
+; с BOT_SEE — чтобы можно было обыграть
 bot:
-        xor dword [bot_tick], 1
-        jz .done                       ; чётный кадр — пропускаем
         cmp dword [ball_dx], 0
         jg .coming
         rdtsc                          ; мяч улетает — выбрать клетку для
@@ -827,7 +852,7 @@ bot:
         cmp dword [ball_x], BOT_SEE
         jge .predict
 .center:
-        mov eax, Y / 2 - PADDLE / 2    ; мяч ещё далеко — ждать в центре
+        mov eax, (Y / 2 - PADDLE / 2) * 2 ; мяч ещё далеко — ждать в центре
         jmp .chase
 .predict:                              ; где мяч будет у ракетки, если лететь
         mov eax, PADDLE_R_X            ; по прямой: y + dy * (сколько осталось).
@@ -843,62 +868,76 @@ bot:
         mov eax, Y - 1
 .bottom_ok:
         sub eax, [bot_aim]             ; цель: мяч напротив выбранной клетки
+        shl eax, 1                     ; клетки -> половинки клетки
 .chase:
-        cmp eax, [paddle_r]            ; eax = нужная верхняя клетка ракетки
+        cmp eax, [paddle_r]            ; eax = нужный верх ракетки в половинках
         je .done
         jl .up
-        inc dword [paddle_r]
+        add dword [paddle_r], 1        ; за ход — полклетки
         jmp .clamp
 .up:
-        dec dword [paddle_r]
+        sub dword [paddle_r], 1
 .clamp:
         lea rbp, [paddle_r]
         call clamp
 .done:
         ret
 
-; clamp: не выпускать ракетку [rbp] за поле
+; clamp: не выпускать ракетку [rbp] за поле (позиция в половинках клетки)
 clamp:
-        cmp dword [rbp], 2
+        cmp dword [rbp], 4
         jge .top_ok
-        mov dword [rbp], 2
+        mov dword [rbp], 4
 .top_ok:
-        cmp dword [rbp], Y - PADDLE
+        cmp dword [rbp], (Y - PADDLE) * 2
         jle .done
-        mov dword [rbp], Y - PADDLE
+        mov dword [rbp], (Y - PADDLE) * 2
 .done:
         ret
 
-; hit_paddle: rbp = ракетка; eax = 1, если мяч на её высоте
-; до или после хода — иначе удар краем ракетки по диагонали считается голом
+; hit_paddle: rbp = ракетка (позиция в половинках клетки); eax = 1, если мяч
+; на её высоте до или после хода — иначе удар краем ракетки по диагонали
+; считается голом
 hit_paddle:
-        mov eax, [ball_y]
-        sub eax, [rbp]                 ; 0..PADDLE-1 = попал
-        cmp eax, PADDLE                ; беззнаково: отрицательные тоже мимо
-        jb .hit
-        mov eax, [prev_y]
-        sub eax, [rbp]
-        cmp eax, PADDLE
-        jb .hit
-        xor eax, eax
-        ret
+        mov eax, [rbp]
+        shr eax, 1                     ; верхняя клетка ракетки
+        mov ecx, [rbp]
+        add ecx, PADDLE_H - 1
+        shr ecx, 1                     ; нижняя клетка ракетки
+        mov edx, [ball_y]
+        cmp edx, eax
+        jl .prev
+        cmp edx, ecx
+        jle .hit
+.prev:
+        mov edx, [prev_y]
+        cmp edx, eax
+        jl .miss
+        cmp edx, ecx
+        jg .miss
 .hit:
         mov eax, 1
         ret
+.miss:
+        xor eax, eax
+        ret
 
-; aim: rbp = ракетка; dy зависит от клетки, в которую попал мяч:
+; aim: rbp = ракетка; dy зависит от того, где мяч попал в ракетку:
 ; центр — прямо, края — круто вверх/вниз
 aim:
         mov eax, [ball_y]
-        sub eax, [rbp]                 ; 0..PADDLE-1
-        jns .pos
-        xor eax, eax                   ; задел по диагонали выше ракетки
-.pos:
-        cmp eax, PADDLE - 1
-        jle .ok
-        mov eax, PADDLE - 1            ; задел по диагонали ниже ракетки
-.ok:
-        lea rcx, [angle_tab]
+        shl eax, 1                     ; верх мяча в половинках клетки
+        sub eax, [rbp]                 ; сдвиг от верха ракетки
+        sub eax, 4                     ; центр мяча минус центр ракетки (5)
+        add eax, 5                     ; индекс 0..10 для сдвига -5..5
+        jns .lo_ok
+        xor eax, eax                   ; мяч ушёл выше — край ракетки
+.lo_ok:
+        cmp eax, 10
+        jle .hi_ok
+        mov eax, 10                    ; мяч ушёл ниже — край ракетки
+.hi_ok:
+        lea rcx, [angle_rel]
         mov eax, [rcx + rax*4]
         mov [ball_dy], eax
         ret
@@ -995,35 +1034,42 @@ draw_score:
         call put
         ret
 
-; update_paddle: rbp = ракетка, r14d = столбец, r15d = старая верхняя клетка
+; update_paddle: rbp = ракетка, r14d = столбец, r15d = старый верх (в половинках)
 ; если ракетка сдвинулась — стирает только освободившиеся клетки и рисует новую
 update_paddle:
         mov eax, [rbp]
         cmp eax, r15d
         je .done                       ; не двигалась — ничего не рисуем
+        mov r12d, r15d
+        shr r12d, 1                    ; верхняя клетка старой ракетки
+        lea r13d, [r15d + PADDLE_H - 1]
+        shr r13d, 1                    ; нижняя клетка старой ракетки
+        mov r10d, eax
+        shr r10d, 1                    ; верхняя клетка новой ракетки
+        lea r15d, [eax + PADDLE_H - 1]
+        shr r15d, 1                    ; нижняя клетка новой ракетки
+.erase:
+        cmp r12d, r13d
+        jg .draw
+        cmp r12d, r10d
+        jl .erase_cell
+        cmp r12d, r15d
+        jle .next
+.erase_cell:
+        mov edi, r12d
+        mov esi, r14d
         lea r8, [space]
         mov r9d, 1
-        xor r12d, r12d
-.erase:
-        mov edi, r15d
-        add edi, r12d                  ; клетка старой ракетки
-        mov eax, edi
-        sub eax, [rbp]
-        cmp eax, PADDLE                ; входит в новую ракетку?
-        jb .keep
-        mov esi, r14d
         call put
-.keep:
+.next:
         inc r12d
-        cmp r12d, PADDLE
-        jl .erase
-        lea r8, [block]
-        mov r9d, block_len
+        jmp .erase
+.draw:
         call draw_paddle
 .done:
         ret
 
-; draw_paddles: рисует обе ракетки строкой r8 длины r9d
+; draw_paddles: рисует обе ракетки
 draw_paddles:
         lea rbp, [paddle_l]
         mov r14d, PADDLE_L_X
@@ -1033,17 +1079,53 @@ draw_paddles:
         call draw_paddle
         ret
 
-; draw_paddle: rbp = ракетка, r14d = столбец, r8/r9d = что рисовать
+; draw_paddle: rbp = ракетка (верх в половинках клетки), r14d = столбец
+; целые клетки рисует █, а неполные края — ▄ сверху и ▀ снизу
 draw_paddle:
-        xor r12d, r12d
-.loop:
-        mov edi, [rbp]
-        add edi, r12d
+        mov r10d, [rbp]                ; верх ракетки в половинках
+        mov r12d, r10d
+        shr r12d, 1                    ; верхняя клетка
+        lea r13d, [r10d + PADDLE_H - 1]
+        shr r13d, 1                    ; нижняя клетка
+        test r10d, 1
+        jz .middle                     ; верхняя клетка целая
+        mov edi, r12d
         mov esi, r14d
+        lea r8, [half_bottom]
+        mov r9d, BOX_LEN
         call put
         inc r12d
-        cmp r12d, PADDLE
-        jl .loop
+.middle:
+        mov r15d, r10d
+        add r15d, PADDLE_H
+        test r15d, 1
+        jz .full_end
+        mov r15d, r13d
+        dec r15d                       ; нижняя клетка неполная
+        jmp .mid_loop
+.full_end:
+        mov r15d, r13d
+.mid_loop:
+        cmp r12d, r15d
+        jg .bottom
+        mov edi, r12d
+        mov esi, r14d
+        lea r8, [block]
+        mov r9d, BOX_LEN
+        call put
+        inc r12d
+        jmp .mid_loop
+.bottom:
+        mov r15d, r10d
+        add r15d, PADDLE_H
+        test r15d, 1
+        jz .done
+        mov edi, r13d
+        mov esi, r14d
+        lea r8, [half_top]
+        mov r9d, BOX_LEN
+        call put
+.done:
         ret
 
 ; print: rsi = адрес, edx = длина
